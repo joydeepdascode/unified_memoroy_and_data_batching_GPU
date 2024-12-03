@@ -6,9 +6,12 @@ import time
 import matplotlib.pyplot as plt
 from allocation import allocate_data  # Import the allocation function
 from mc_simulation import monte_carlo_kernel_cpu
+from mc_simulation import monte_carlo_kernel
+from mc_simulation import monte_carlo_kernel_test
 from mc_simulation import run_simulation
 from matplotlib.animation import FuncAnimation
 from config import *  # Import configuration settings
+from numba import cuda
 
 # -----------------------------------------------------------------------
 
@@ -54,23 +57,40 @@ ani.save(output_path, writer="ffmpeg", fps=20)
 plt.close(fig)
 print(f"Animation saved at: {output_path}")
 
-# -------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 
-# Call the allocation function to allocate the data
+# ------------------------- GPU PRE-REQUISITIES -------------------------------
 
 grid, particle_positions, particle_directions, particle_energies = \
     allocate_data(grid_size, num_particles)
-# CPU Simulation Timing
-start_time_cpu = time.time()  # Start time
+
+grid_gpu = cuda.to_device(grid)
+particle_positions_gpu = cuda.to_device(particle_positions)
+particle_directions_gpu = cuda.to_device(particle_directions)
+particle_energies_gpu = cuda.to_device(particle_energies)
+grid_size_gpu = cuda.to_device(grid_size)
+num_steps_gpu = cuda.to_device(num_steps)
 
 # Run the Monte Carlo kernel on the CPU
-positions_over_time, energies_over_time, grids_over_time = monte_carlo_kernel_cpu(
-    grid, particle_positions, particle_directions, particle_energies, grid_size, num_steps
+positions_over_time, energies_over_time, grids_over_time, positions_over_time_cpu_gpu, energies_over_time_cpu_gpu, grids_over_time_cpu_gpu = monte_carlo_kernel(
+    grid, particle_positions, particle_directions, particle_energies, grid_gpu,particle_positions_gpu,particle_directions_gpu,particle_energies_gpu,grid_size_gpu,num_steps_gpu
 )
 
-end_time_cpu = time.time()  # End time
-elapsed_time = end_time_cpu - start_time_cpu
-print(f"CPU simulation took {elapsed_time:.4f} seconds.")  # Print execution time
+if simulation_type==1:
+    positions_over_time = positions_over_time_cpu_gpu
+    energies_over_time = energies_over_time_cpu_gpu
+    grids_over_time = grids_over_time_cpu_gpu
+
+
+# ---------------------- SMALL TEST (NOT PART OF MAIN CODE) ---------------
+# positions_over_time, energies_over_time, grids_over_time, positions_over_time_cpu_gpu = monte_carlo_kernel_test(
+#     grid, particle_positions, particle_directions, particle_energies, particle_positions_gpu
+# )
+# print("positions_over_time_cpu_gpu: PRINTING")
+# print(positions_over_time_cpu_gpu[0:4,1,0:3])
+# ---------------------- SMALL TEST (NOT PART OF MAIN CODE) ---------------
+
+# -----------------------------------------------------------------------------
 
 # -----------------------------------------------------------------------------
 
@@ -153,6 +173,11 @@ ani2 = FuncAnimation(fig2, update_energy, frames=num_steps, interval=50, blit=Tr
 
 plt.tight_layout()  # Adjust the layout to avoid overlapping labels
 plt.show()
+
+# -----------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 
 # Absolute path for the output file
 output_path1 = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'output', 'pos_mc_simul.mp4')

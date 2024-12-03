@@ -1,9 +1,18 @@
 import numba
-from numba import cuda
 import cupy as cp
 import numpy as np
 import time
+import sys
+import os
+from numba import cuda
+# -----------------------------------------------------------------------
 
+# Add the 'input' directory to the path
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'input'))
+# Now import from the 'input' directory
+from input import *  # Import simulation parameters from input.py
+
+# -----------------------------------------------------------------------
 
 # CPU simulation function
 def simulate_on_cpu(start_states, num_steps):
@@ -72,34 +81,6 @@ def run_simulation(total_samples, num_steps, final_steps, s_size, interval, fig,
 
     return update
 
-# # Kernel function
-# @cuda.jit
-# def monte_carlo_kernel(data, result):
-#     idx = cuda.grid(1)  # Get the thread index in a 1D grid
-#     if idx < data.size:  # Ensure we're within bounds
-#         result[idx] = data[idx] + 1  # Simulating some Monte Carlo-like operation
-
-# # Function to run the simulation on the GPU
-# def run_simulation(data):
-#     # Allocate memory for result
-#     result = np.zeros_like(data)
-
-#     # Configure threads and blocks
-#     threads_per_block = 32
-#     blocks_per_grid = (data.size + threads_per_block - 1) // threads_per_block
-
-#     # Transfer data to device (GPU)
-#     d_data = cuda.to_device(data)
-#     d_result = cuda.to_device(result)
-
-#     # Launch the kernel
-#     monte_carlo_kernel[blocks_per_grid, threads_per_block](d_data, d_result)
-
-#     # Copy the result back to the host (CPU)
-#     d_result.copy_to_host(result)
-
-#     return result
-
 
 def monte_carlo_kernel_cpu(grid, particle_positions, particle_directions, particle_energies, grid_size, num_steps):
     num_particles = particle_positions.shape[0]
@@ -123,19 +104,270 @@ def monte_carlo_kernel_cpu(grid, particle_positions, particle_directions, partic
 
             # --------- UPDATE POS AND BOUND THEM
             # Perform a simple simulation step (random walk and energy deposit)
-            new_position = position + direction
-            new_position = np.clip(new_position, 0, np.array(grid_size) - 1)  # Keep within grid bounds
+            position = position + direction
+            position = np.clip(position, 0, np.array(grid_size) - 1)  # Keep within grid bounds
 
             # --------- UPDATE GRID ARRAY WITH ENERGY
             # Update grid with the energy deposited by the particle
-            grid[tuple(new_position.astype(int))] += energy
+            grid[tuple(position.astype(int))] += energy
 
             # --------- UPDATE POS
             # Update the particle's position
-            particle_positions[i] = new_position
+            particle_positions[i] = position
 
             # --------- UPDATE EG
             # Simulate energy loss (simple model)
             particle_energies[i] *= 0.98  # Particle loses energy each step
 
     return positions_over_time, energies_over_time, grids_over_time
+
+# --------------------------------------------------------------------------------------------------------------------
+# --------------------------------------------------------------------------------------------------------------------
+# --------------------------------------------------------------------------------------------------------------------
+# 
+# ---------------------------------- A SMALL TESTING FUNCTION (NOT PART OF MAIN CODE) --------------------------------
+# 
+# --------------------------------------------------------------------------------------------------------------------
+
+def monte_carlo_kernel_test(grid, particle_positions, particle_directions, particle_energies, particle_positions_gpu):
+    positions_over_time = []  # To store particle positions for animation
+    energies_over_time = []   # To store particle energies for visualization
+    grids_over_time = []      # To store grid states for visualization
+
+    positions_over_time_cpu_gpu = []  # To store particle positions for animation
+
+    # Initialize time-dimensioned arrays on GPU
+    positions_over_time_gpu = cuda.device_array((num_steps, num_particles, 3), dtype=np.float32)
+
+    if(simulation_type  == 1):                                                          # type = 1: GPU
+        # # START GPU SIMULATION TIME
+        # start_time_gpu = time.time()  # Start time
+
+        # Kernel launch configuration
+        threads_per_block = 256
+        blocks_per_grid = (particle_positions_gpu.shape[0] + threads_per_block - 1) // threads_per_block
+
+        # Create a host array to store intermediate values before copying to GPU
+        positions_over_time_host = np.zeros((num_steps, 2, 3), dtype=np.float32)
+
+        for step in range(5):
+            # --------- STORE PARTICLE INFO
+            positions_over_time_gpu[step,:,:] = particle_positions_gpu
+
+            # Launch kernel for a single simulation step
+            small_test[blocks_per_grid, threads_per_block](
+                particle_positions_gpu)
+
+        # Transfer updated host array to the GPU
+        # positions_over_time_gpu.copy_to_device(positions_over_time_host)
+
+        positions_over_time_cpu_gpu = positions_over_time_gpu.copy_to_host()  # To store particle positions for animation
+    
+    if(simulation_type  == 0):                                                          # type = 0: CPU
+        # START CPU SIMULATION TIME
+        start_time_cpu = time.time()  # Start time
+
+        for step in range(num_steps):
+            # --------- STORE PARTICLE INFO
+            # Store particle positions and energies for this time step
+            positions_over_time.append(np.copy(particle_positions))
+            energies_over_time.append(np.copy(particle_energies))
+            grids_over_time.append(np.copy(grid))  # Store a snapshot of the grid
+
+            for i in range(num_particles):
+                # --------- LOCAL VARIABLE TO STORE POS, DIR, EG
+                # Get the current particle position and direction
+                position = particle_positions[i]
+                direction = particle_directions[i]
+                energy = particle_energies[i]
+
+                # --------- UPDATE POS AND BOUND THEM
+                # Perform a simple simulation step (random walk and energy deposit)
+                position = position + direction
+                position = np.clip(position, 0, np.array(grid_size) - 1)  # Keep within grid bounds
+
+                # --------- UPDATE GRID ARRAY WITH ENERGY
+                # Update grid with the energy deposited by the particle
+                grid[tuple(position.astype(int))] += energy
+
+                # --------- UPDATE POS
+                # Update the particle's position
+                particle_positions[i] = position
+
+                # --------- UPDATE EG
+                # Simulate energy loss (simple model)
+                particle_energies[i] *= 0.98  # Particle loses energy each step
+
+        # END CPU SIMULATION TIME
+        end_time_cpu = time.time()  # End time
+
+        # TOTAL TIME
+        elapsed_time = end_time_cpu - start_time_cpu
+        print(f"CPU simulation took {elapsed_time:.4f} seconds.")  # Print execution time
+
+            
+    return positions_over_time, energies_over_time, grids_over_time, positions_over_time_cpu_gpu
+
+# --------------------------------------------------------------------------------------
+
+@cuda.jit
+def small_test(particle_positions_gpu):
+    idx = cuda.grid(1)
+    if idx >= particle_positions_gpu.shape[0]:
+        return
+    
+    # Define a local array (size must match particle_positions_gpu's row size)
+    # position = cuda.local.array(shape=(3,), dtype=numba.float32)  # Replace 3 with actual row size
+
+    position = particle_positions_gpu[idx]
+
+    # --------- UPDATE POS AND BOUND THEM
+    # Update the local array: position
+    position[:] = 5.6
+    # for i in range(position.shape[0]):
+    #     position[i] = 5.6
+
+    # --------- UPDATE POS
+    # Update the particle's position
+    # Copy data back to particle_positions_gpu
+    for i in range(particle_positions_gpu.shape[1]):
+        particle_positions_gpu[idx, i] = position[i]
+
+# --------------------------------------------------------------------------------------------------------------------
+# --------------------------------------------------------------------------------------------------------------------
+# --------------------------------------------------------------------------------------------------------------------
+# --------------------------------------------------------------------------------------------------------------------
+
+def monte_carlo_kernel(grid, particle_positions, particle_directions, particle_energies, grid_gpu,particle_positions_gpu,particle_directions_gpu,particle_energies_gpu,grid_size_gpu,num_steps_gpu):
+    positions_over_time = []  # To store particle positions for animation
+    energies_over_time = []   # To store particle energies for visualization
+    grids_over_time = []      # To store grid states for visualization
+
+    positions_over_time_cpu_gpu = []  # To store particle positions for animation
+    energies_over_time_cpu_gpu = []   # To store particle energies for visualization
+    grids_over_time_cpu_gpu = []      # To store grid states for visualization
+
+    # Initialize time-dimensioned arrays on GPU
+    positions_over_time_gpu = cuda.device_array((num_steps, num_particles, 3), dtype=np.float32)
+    energies_over_time_gpu = cuda.device_array((num_steps, num_particles), dtype=np.float32)
+    grids_over_time_gpu = cuda.device_array((num_steps, *grid_size), dtype=np.float32)
+    
+    if(simulation_type == 0):                                                          # type = 0: CPU
+        # START CPU SIMULATION TIME
+        start_time_cpu = time.time()  # Start time
+
+        for step in range(num_steps):
+            # --------- STORE PARTICLE INFO
+            # Store particle positions and energies for this time step
+            positions_over_time.append(np.copy(particle_positions))
+            energies_over_time.append(np.copy(particle_energies))
+            grids_over_time.append(np.copy(grid))  # Store a snapshot of the grid
+
+            for i in range(num_particles):
+                # --------- LOCAL VARIABLE TO STORE POS, DIR, EG
+                # Get the current particle position and direction
+                position = particle_positions[i]
+                direction = particle_directions[i]
+                energy = particle_energies[i]
+
+                # --------- UPDATE POS AND BOUND THEM
+                # Perform a simple simulation step (random walk and energy deposit)
+                position = position + direction
+                position = np.clip(position, 0, np.array(grid_size) - 1)  # Keep within grid bounds
+
+                # --------- UPDATE GRID ARRAY WITH ENERGY
+                # Update grid with the energy deposited by the particle
+                grid[tuple(position.astype(int))] += energy
+
+                # --------- UPDATE POS
+                # Update the particle's position
+                particle_positions[i] = position
+
+                # --------- UPDATE EG
+                # Simulate energy loss (simple model)
+                particle_energies[i] *= 0.98  # Particle loses energy each step
+
+        # END CPU SIMULATION TIME
+        end_time_cpu = time.time()  # End time
+
+        # TOTAL TIME
+        elapsed_time = end_time_cpu - start_time_cpu
+        print(f"CPU simulation took {elapsed_time:.4f} seconds.")  # Print execution time
+
+    if(simulation_type == 1):                                                          # type = 1: GPU
+        # START GPU SIMULATION TIME
+        start_time_gpu = time.time()  # Start time
+
+        # Kernel launch configuration
+        threads_per_block = 256
+        blocks_per_grid = (particle_positions_gpu.shape[0] + threads_per_block - 1) // threads_per_block
+
+        # Synchronize to ensure accurate timing
+        cuda.synchronize()
+
+        for step in range(num_steps):
+            # --------- STORE PARTICLE INFO
+            # Store current state into time-dimensioned arrays
+            positions_over_time_gpu[step, :, :] = particle_positions_gpu
+            energies_over_time_gpu[step, :] = particle_energies_gpu
+            grids_over_time_gpu[step, :, :, :] = grid_gpu
+
+            # Launch kernel for a single simulation step
+            particle_pos_energy_grid_update[blocks_per_grid, threads_per_block](
+                grid_gpu, particle_positions_gpu, particle_directions_gpu,particle_energies_gpu,grid_size_gpu,num_steps_gpu)
+
+        positions_over_time_cpu_gpu = positions_over_time_gpu.copy_to_host()  # To store particle positions for animation
+        energies_over_time_cpu_gpu = energies_over_time_gpu.copy_to_host()    # To store particle energies for visualization
+        grids_over_time_cpu_gpu = grids_over_time_gpu.copy_to_host()          # To store grid states for visualization
+
+        # END GPU SIMULATION TIME
+        cuda.synchronize()  # Ensure all GPU tasks are complete
+        end_time_gpu = time.time()  # End time
+
+        # TOTAL TIME
+        elapsed_time = end_time_gpu - start_time_gpu
+        print(f"GPU simulation took {elapsed_time:.4f} seconds.")  # Print execution time
+            
+    return positions_over_time, energies_over_time, grids_over_time, positions_over_time_cpu_gpu, energies_over_time_cpu_gpu, grids_over_time_cpu_gpu
+
+
+@cuda.jit
+def particle_pos_energy_grid_update(grid_gpu, particle_positions_gpu, particle_directions_gpu, particle_energies_gpu, grid_size_gpu, num_steps_gpu):
+    idx = cuda.grid(1)
+    if idx >= particle_positions_gpu.shape[0]:
+        return
+    
+    # --------- LOCAL VARIABLE TO STORE POS, DIR, EG    
+    # Load particle state
+    position = particle_positions_gpu[idx]
+    direction = particle_directions_gpu[idx]
+    energy = particle_energies_gpu[idx]
+
+    # --------- UPDATE POS AND BOUND THEM
+    # Update position
+    for i in range(position.shape[0]):
+        position[i] += direction[i]
+    for i in range(3):  # Handle boundaries (clipping)
+        if position[i] < 0:
+            position[i] = 0
+        elif position[i] >= grid_size_gpu[i]:
+            position[i] = grid_size_gpu[i] - 1
+
+    # --------- UPDATE GRID ARRAY WITH ENERGY
+    # Deposit energy into the grid at the current particle position
+    cuda.atomic.add(grid_gpu, (int(position[0]), int(position[1]), int(position[2])), energy * 0.01)
+
+    # --------- UPDATE POS
+    # Update the particle's position
+    for i in range(particle_positions_gpu.shape[1]):
+        particle_positions_gpu[idx, i] = position[i]
+
+    # --------- UPDATE EG
+    # Simulate energy loss (simple model)
+    energy *= 0.98
+    particle_energies_gpu[i] *= 0.98  # Particle loses energy each step
+
+
+
+
+ 
