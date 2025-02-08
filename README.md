@@ -1,4 +1,4 @@
-# Optimizing GPU Data Transfers for Monte Carlo Simulations in Healthcare
+# Optimizing GPU Data Transfers for Monte Carlo Simulations
 
 ## **Project Overview**  
 This work focuses on one of the key bottlenecks for Monte Carlo simulations in radiation therapy planning: **data transfer overhead between CPU and GPU**. The aims are to optimize these transfers through advanced GPU programming techniques to improve simulation runtime and scalability.
